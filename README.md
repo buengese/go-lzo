@@ -14,3 +14,5 @@ To use this library:
 ```bash
 go get github.com/buengese/go-lzo
 ```
+
+See [DEVELOPING.md](DEVELOPING.md) for tests, benchmarks and the clean-room rules contributions must follow.
