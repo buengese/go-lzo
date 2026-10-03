@@ -8,15 +8,9 @@ package lzo
 import (
 	"encoding/binary"
 	"errors"
-	"runtime"
 )
 
-const (
-	hostBigEndian = runtime.GOARCH == "ppc64" || runtime.GOARCH == "s390x" || runtime.GOARCH == "mips" || runtime.GOARCH == "mips64"
-	max255Count   = (^uint(0))/255 - 2
-	m3Marker      = 0x20
-	m4Marker      = 0x10
-)
+const max255Count = (^uint(0))/255 - 2
 
 var (
 	ErrLookbehindOverrun   = errors.New("lzo: lookbehind overrun")
@@ -26,35 +20,10 @@ var (
 	ErrInputNotConsumed    = errors.New("lzo: input not fully consumed")
 )
 
-// decoder holds all state needed during decompression
-type decoder struct {
-	src, dst            buffer // source and destination buffers
-	curState, nextState int    // current state and next state
-	lbIdx, lbLen        int    // lookbehind current index and length
-}
-
-// buffer holds a slice and its current index and end boundary
-type buffer struct {
-	data     []byte // underlying data slice
-	idx, end int    // current index and end of the buffer
-}
-
-func newDecoder(srcBytes, dstBytes []byte) *decoder {
-	return &decoder{
-		src: newBuffer(srcBytes),
-		dst: newBuffer(dstBytes),
-	}
-}
-
-func newBuffer(data []byte) buffer {
-	return buffer{
-		data: data,
-		idx:  0,
-		end:  len(data),
-	}
-}
-
 // Decompress the given LZO1X compressed data to the destination buffer.
+//
+// dstBytes only needs to be large enough to hold the decompressed data. Decompress may use all of dstBytes as
+// scratch space, only the first outSize bytes hold the result.
 //
 // Here's a summary of the state machine:
 //
@@ -65,362 +34,268 @@ func newBuffer(data []byte) buffer {
 //	M2             0x40..0xFF  copy 3-8 bytes within 2kB distance
 //	M3             0x20..0x3F  copy small block within 16kB distance
 //	M4             0x10..0x1F  copy block within 16..48kB, end-of-stream if distance==16384
+//
+//nolint:funlen,gocognit,gocyclo // a single flat loop keeps the decoder state in registers
 func Decompress(srcBytes, dstBytes []byte) (outSize int, err error) {
-	d := newDecoder(srcBytes, dstBytes)
-
-	if d.src.end < 3 {
+	src, dst := srcBytes, dstBytes
+	if len(src) < 3 {
 		return 0, ErrInputOverrun
 	}
 
-	if err = d.handleFirstByteEncoding(); err != nil {
-		return d.dst.idx, err
-	}
+	// s and d are the positions in src and dst. state is the number of literals copied by the last instruction
+	// (4 meaning 4 or more), it decides how instructions 0..15 are interpreted.
+	var s, d, state int
 
-instructionLoop:
-	for {
-		if d.src.idx+1 > d.src.end {
-			return d.dst.idx, ErrInputOverrun
-		}
-		inst := d.src.data[d.src.idx]
-		d.src.idx++
-		switch {
-		case inst&0xC0 != 0:
-			if err = d.handleM2(inst); err != nil {
-				return d.dst.idx, err
-			}
-		case inst&m3Marker != 0:
-			if err = d.handleM3(inst); err != nil {
-				return d.dst.idx, err
-			}
-		case inst&m4Marker != 0:
-			var finished bool
-			if finished, err = d.handleM4(inst); err != nil {
-				return d.dst.idx, err
-			}
-			if finished {
-				break instructionLoop /* stream finished */
-			}
-		default:
-			/* [M1] Depends on the number of literals copied by the last instruction. */
-			switch d.curState {
-			case 0:
-				if err = d.handleM1LongLiteral(inst); err != nil {
-					return d.dst.idx, err
-				}
-				d.curState = 4
-				continue
-			default:
-				if err = d.handleM1ShortCopy(inst); err != nil {
-					return d.dst.idx, err
-				}
-			}
-		}
-
-		if d.lbIdx < 0 {
-			return d.dst.idx, ErrLookbehindOverrun
-		}
-		if d.src.idx+d.nextState > d.src.end {
-			return d.dst.idx, ErrInputOverrun
-		}
-		if d.dst.idx+d.lbLen+d.nextState > d.dst.end {
-			return d.dst.idx, ErrOutputOverrun
-		}
-
-		d.copyLookbehind()
-		d.copyLiterals(d.nextState)
-	}
-
-	switch {
-	case d.lbLen != 3:
-		/* ensure terminating M4 was encountered */
-		return d.dst.idx, ErrDecompressionFailed
-	case d.src.idx == d.src.end:
-		return d.dst.idx, nil
-	case d.src.idx < d.src.end:
-		return d.dst.idx, ErrInputNotConsumed
-	default:
-		return d.dst.idx, ErrInputOverrun
-	}
-}
-
-//go:inline
-func (d *decoder) handleFirstByteEncoding() error {
-	switch {
-	case d.src.data[d.src.idx] >= 22:
-		/* 22..255 : copy literal string
-		 *           length = (byte - 17) = 4..238
+	if src[0] >= 18 {
+		/* 18..21 : copy 1..4 literals
+		 *          state = (byte - 17)
+		 * 22..255 : copy literal string
+		 *           length = (byte - 17) = 5..238
 		 *           state = 4 [ don't copy extra literals ]
-		 *           skip byte
 		 */
-		length := int(d.src.data[d.src.idx]) - 17
-		d.src.idx++
-		if d.src.idx+length > d.src.end {
-			return ErrInputOverrun
+		n := int(src[0]) - 17
+		s = 1
+		if n > len(src)-s {
+			return 0, ErrInputOverrun
 		}
-		if d.dst.idx+length > d.dst.end {
-			return ErrOutputOverrun
+		if n > len(dst) {
+			return 0, ErrOutputOverrun
 		}
-		d.copyLiterals(length)
-		d.curState = 4
-
-	case d.src.data[d.src.idx] >= 18:
-		/* 18..21 : copy 0..3 literals
-		 *          state = (byte - 17) = 0..3  [ copy <state> literals ]
-		 *          skip byte
-		 */
-		length := int(d.src.data[d.src.idx]) - 17
-		d.src.idx++
-		if d.src.idx+length > d.src.end {
-			return ErrInputOverrun
-		}
-		if d.dst.idx+length > d.dst.end {
-			return ErrOutputOverrun
-		}
-		d.copyLiterals(length)
-		d.curState = length
+		copy(dst[:n], src[s:s+n])
+		s += n
+		d = n
+		state = min(n, 4)
 	}
 	/* 0..17 : follow regular instruction encoding, see below. It is worth
 	 *         noting that codes 16 and 17 will represent a block copy from
 	 *         the dictionary which is empty, and that they will always be
 	 *         invalid at this place.
 	 */
-	return nil
-}
 
-//go:inline
-func (d *decoder) handleM2(inst byte) error {
-	/* [M2]
-	 * 1 L L D D D S S  (128..255)
-	 *   Copy 5-8 bytes from block within 2kB distance
-	 *   state = S (copy S literals after this block)
-	 *   length = 5 + L
-	 * Always followed by exactly one byte : H H H H H H H H
-	 *   distance = (H << 3) + D + 1
-	 *
-	 * 0 1 L D D D S S  (64..127)
-	 *   Copy 3-4 bytes from block within 2kB distance
-	 *   state = S (copy S literals after this block)
-	 *   length = 3 + L
-	 * Always followed by exactly one byte : H H H H H H H H
-	 *   distance = (H << 3) + D + 1
-	 */
-	if d.src.idx+1 > d.src.end {
-		return ErrInputOverrun
-	}
-	d.lbIdx = d.dst.idx - ((int(d.src.data[d.src.idx]) << 3) + int((inst>>2)&0x7) + 1)
-	d.src.idx++
-	d.lbLen = int(inst>>5) + 1
-	d.nextState = int(inst & 0x3)
-	return nil
-}
-
-//go:inline
-func (d *decoder) handleM3(inst byte) error {
-	/* [M3]
-	 * 0 0 1 L L L L L  (32..63)
-	 *   Copy of small block within 16kB distance (preferably less than 34B)
-	 *   length = 2 + (L ?: 31 + (zero_bytes * 255) + non_zero_byte)
-	 * Always followed by exactly one LE16 :  D D D D D D D D : D D D D D D S S
-	 *   distance = D + 1
-	 *   state = S (copy S literals after this block)
-	 */
-	d.lbLen = int(inst&0x1f) + 2
-	if d.lbLen == 2 {
-		offset, err := d.countZeroBytes(31)
-		if err != nil {
-			return err
+	for {
+		if s >= len(src) {
+			return d, ErrInputOverrun
 		}
-		d.lbLen += offset
-	}
-	if d.src.idx+2 > d.src.end {
-		return ErrInputOverrun
-	}
-	val := int(d.getLe16())
-	d.src.idx += 2
-	d.lbIdx = d.dst.idx - (val>>2 + 1)
-	d.nextState = val & 0x3
-	return nil
-}
+		inst := int(src[s])
+		s++
 
-//go:inline
-func (d *decoder) handleM4(inst byte) (finished bool, err error) {
-	/* [M4]
-	 * 0 0 0 1 H L L L  (16..31)
-	 *   Copy of a block within 16..48kB distance (preferably less than 10B)
-	 *   length = 2 + (L ?: 7 + (zero_bytes * 255) + non_zero_byte)
-	 * Always followed by exactly one LE16 :  D D D D D D D D : D D D D D D S S
-	 *   distance = 16384 + (H << 14) + D
-	 *   state = S (copy S literals after this block)
-	 *   End of stream is reached if distance == 16384
-	 */
-	d.lbLen = int(inst&0x7) + 2
-	if d.lbLen == 2 {
-		offset, err := d.countZeroBytes(7)
-		if err != nil {
-			return false, err
-		}
-		d.lbLen += offset
-	}
+		// every instruction except a long literal run copies length bytes from dist bytes back, followed by
+		// next (0..3) literals
+		var dist, length, next int
+		switch {
+		case inst >= 64:
+			/* [M2]
+			 * 1 L L D D D S S  (128..255)
+			 *   Copy 5-8 bytes from block within 2kB distance
+			 *   state = S (copy S literals after this block)
+			 *   length = 5 + L
+			 * Always followed by exactly one byte : H H H H H H H H
+			 *   distance = (H << 3) + D + 1
+			 *
+			 * 0 1 L D D D S S  (64..127)
+			 *   Copy 3-4 bytes from block within 2kB distance
+			 *   state = S (copy S literals after this block)
+			 *   length = 3 + L
+			 * Always followed by exactly one byte : H H H H H H H H
+			 *   distance = (H << 3) + D + 1
+			 */
+			if s >= len(src) {
+				return d, ErrInputOverrun
+			}
+			dist = int(src[s])<<3 + (inst>>2)&7 + 1
+			s++
+			length = inst>>5 + 1
+			next = inst & 3
 
-	if d.src.idx+2 > d.src.end {
-		return false, ErrInputOverrun
-	}
+		case inst >= 32:
+			/* [M3]
+			 * 0 0 1 L L L L L  (32..63)
+			 *   Copy of small block within 16kB distance (preferably less than 34B)
+			 *   length = 2 + (L ?: 31 + (zero_bytes * 255) + non_zero_byte)
+			 * Always followed by exactly one LE16 :  D D D D D D D D : D D D D D D S S
+			 *   distance = D + 1
+			 *   state = S (copy S literals after this block)
+			 */
+			length = inst&31 + 2
+			if length == 2 {
+				if length, s, err = extendedLength(src, s, 2+31); err != nil {
+					return d, err
+				}
+			}
+			if len(src)-s < 2 {
+				return d, ErrInputOverrun
+			}
+			v := int(binary.LittleEndian.Uint16(src[s:]))
+			s += 2
+			dist = v>>2 + 1
+			next = v & 3
 
-	val := int(d.getLe16())
-	d.src.idx += 2
-	d.lbIdx = d.dst.idx - (int(inst&0x8)<<11 + val>>2)
-	d.nextState = val & 0x3
+		case inst >= 16:
+			/* [M4]
+			 * 0 0 0 1 H L L L  (16..31)
+			 *   Copy of a block within 16..48kB distance (preferably less than 10B)
+			 *   length = 2 + (L ?: 7 + (zero_bytes * 255) + non_zero_byte)
+			 * Always followed by exactly one LE16 :  D D D D D D D D : D D D D D D S S
+			 *   distance = 16384 + (H << 14) + D
+			 *   state = S (copy S literals after this block)
+			 *   End of stream is reached if distance == 16384
+			 */
+			length = inst&7 + 2
+			if length == 2 {
+				if length, s, err = extendedLength(src, s, 2+7); err != nil {
+					return d, err
+				}
+			}
+			if len(src)-s < 2 {
+				return d, ErrInputOverrun
+			}
+			v := int(binary.LittleEndian.Uint16(src[s:]))
+			s += 2
+			dist = (inst&8)<<11 + v>>2
+			next = v & 3
+			if dist == 0 {
+				/* stream finished, the terminating M4 must be a 3 byte copy */
+				switch {
+				case length != 3:
+					return d, ErrDecompressionFailed
+				case s < len(src):
+					return d, ErrInputNotConsumed
+				}
+				return d, nil
+			}
+			dist += 16384
 
-	if d.lbIdx == d.dst.idx {
-		finished = true /* stream finished */
-		return finished, nil
-	}
+		case state == 0:
+			/* If last instruction did not copy any literal (state == 0), this
+			 * encoding will be a copy of 4 or more literal, and must be interpreted
+			 * like this :
+			 *
+			 *    0 0 0 0 L L L L  (0..15)  : copy long literal string
+			 *    length = 3 + (L ?: 15 + (zero_bytes * 255) + non_zero_byte)
+			 *    state = 4  (no extra literals are copied)
+			 */
+			n := inst + 3
+			if n == 3 {
+				if n, s, err = extendedLength(src, s, 3+15); err != nil {
+					return d, err
+				}
+			}
+			if n > len(src)-s {
+				return d, ErrInputOverrun
+			}
+			if n > len(dst)-d {
+				return d, ErrOutputOverrun
+			}
+			if n <= 16 && len(src)-s >= 16 && len(dst)-d >= 16 {
+				// copy whole words, the bytes past the literals are overwritten later
+				to, from := dst[d:d+16], src[s:s+16]
+				binary.LittleEndian.PutUint64(to, binary.LittleEndian.Uint64(from))
+				binary.LittleEndian.PutUint64(to[8:], binary.LittleEndian.Uint64(from[8:]))
+			} else {
+				copy(dst[d:d+n], src[s:s+n])
+			}
+			s += n
+			d += n
+			state = 4
+			continue
 
-	d.lbIdx -= 16384
-
-	return false, nil
-}
-
-//go:inline
-func (d *decoder) handleM1LongLiteral(inst byte) error {
-	/* If last instruction did not copy any literal (state == 0), this
-	 * encoding will be a copy of 4 or more literal, and must be interpreted
-	 * like this :
-	 *
-	 *    0 0 0 0 L L L L  (0..15)  : copy long literal string
-	 *    length = 3 + (L ?: 15 + (zero_bytes * 255) + non_zero_byte)
-	 *    state = 4  (no extra literals are copied)
-	 */
-	length := int(inst) + 3
-	if length == 3 {
-		offset, err := d.countZeroBytes(15)
-		if err != nil {
-			return err
-		}
-
-		length += offset
-	}
-
-	if d.src.idx+length > d.src.end {
-		return ErrInputOverrun
-	}
-
-	if d.dst.idx+length > d.dst.end {
-		return ErrOutputOverrun
-	}
-
-	d.copyLiterals(length)
-
-	return nil
-}
-
-//go:inline
-func (d *decoder) handleM1ShortCopy(inst byte) error {
-	switch {
-	case d.curState != 4:
-		/* If last instruction used to copy between 1 to 3 literals (encoded in
-		 * the instruction's opcode or distance), the instruction is a copy of a
-		 * 2-byte block from the dictionary within a 1kB distance. It is worth
-		 * noting that this instruction provides little savings since it uses 2
-		 * bytes to encode a copy of 2 other bytes but it encodes the number of
-		 * following literals for free. It must be interpreted like this :
-		 *
-		 *    0 0 0 0 D D S S  (0..15)  : copy 2 bytes from <= 1kB distance
-		 *    length = 2
-		 *    state = S (copy S literals after this block)
-		 *  Always followed by exactly one byte : H H H H H H H H
-		 *    distance = (H << 2) + D + 1
-		 */
-
-		if d.src.idx+1 > d.src.end {
-			return ErrInputOverrun
-		}
-
-		d.nextState = int(inst & 0x3)
-		d.lbIdx = d.dst.idx - (int(inst>>2) + (int(d.src.data[d.src.idx]) << 2) + 1)
-		d.src.idx++
-		d.lbLen = 2
-
-	default:
-		/* If last instruction used to copy 4 or more literals (as detected by
-		 * state == 4), the instruction becomes a copy of a 3-byte block from the
-		 * dictionary from a 2..3kB distance, and must be interpreted like this :
-		 *
-		 *    0 0 0 0 D D S S  (0..15)  : copy 3 bytes from 2..3 kB distance
-		 *    length = 3
-		 *    state = S (copy S literals after this block)
-		 *  Always followed by exactly one byte : H H H H H H H H
-		 *    distance = (H << 2) + D + 2049
-		 */
-
-		if d.src.idx+1 > d.src.end {
-			return ErrInputOverrun
+		default:
+			/* If last instruction used to copy between 1 to 3 literals (encoded in
+			 * the instruction's opcode or distance), the instruction is a copy of a
+			 * 2-byte block from the dictionary within a 1kB distance. It is worth
+			 * noting that this instruction provides little savings since it uses 2
+			 * bytes to encode a copy of 2 other bytes but it encodes the number of
+			 * following literals for free. It must be interpreted like this :
+			 *
+			 *    0 0 0 0 D D S S  (0..15)  : copy 2 bytes from <= 1kB distance
+			 *    length = 2
+			 *    state = S (copy S literals after this block)
+			 *  Always followed by exactly one byte : H H H H H H H H
+			 *    distance = (H << 2) + D + 1
+			 *
+			 * If last instruction used to copy 4 or more literals (as detected by
+			 * state == 4), the instruction becomes a copy of a 3-byte block from the
+			 * dictionary from a 2..3kB distance, and must be interpreted like this :
+			 *
+			 *    0 0 0 0 D D S S  (0..15)  : copy 3 bytes from 2..3 kB distance
+			 *    length = 3
+			 *    state = S (copy S literals after this block)
+			 *  Always followed by exactly one byte : H H H H H H H H
+			 *    distance = (H << 2) + D + 2049
+			 */
+			if s >= len(src) {
+				return d, ErrInputOverrun
+			}
+			dist = int(src[s])<<2 + inst>>2 + 1
+			s++
+			length = 2
+			if state == 4 {
+				dist += 2048
+				length = 3
+			}
+			next = inst & 3
 		}
 
-		d.nextState = int(inst & 0x3)
-		d.lbIdx = d.dst.idx - (int(inst>>2) + (int(d.src.data[d.src.idx]) << 2) + 2049)
-		d.src.idx++
-		d.lbLen = 3
-	}
-	return nil
-}
-
-//go:inline
-func (d *decoder) copyLiterals(length int) {
-	// note: benchmarking shows a byte loop beats copy() for short runs, but not for longer ones
-	if length > 8 {
-		copy(d.dst.data[d.dst.idx:d.dst.idx+length], d.src.data[d.src.idx:d.src.idx+length])
-	} else {
-		for i := range length {
-			d.dst.data[d.dst.idx+i] = d.src.data[d.src.idx+i]
+		if dist > d {
+			return d, ErrLookbehindOverrun
 		}
-	}
-	d.dst.idx += length
-	d.src.idx += length
-}
-
-//go:inline
-func (d *decoder) copyLookbehind() {
-	// note: benchmarking shows a byte loop beats copy() for short runs, but not for longer ones.
-	// overlapping copies (distance < length) must stay byte-wise: they repeat the bytes just written.
-	if d.lbLen > 8 && d.dst.idx-d.lbIdx >= d.lbLen {
-		copy(d.dst.data[d.dst.idx:d.dst.idx+d.lbLen], d.dst.data[d.lbIdx:d.lbIdx+d.lbLen])
-	} else {
-		for i := 0; i < d.lbLen; i++ {
-			d.dst.data[d.dst.idx+i] = d.dst.data[d.lbIdx+i]
+		if next > len(src)-s {
+			return d, ErrInputOverrun
 		}
+		if length+next > len(dst)-d {
+			return d, ErrOutputOverrun
+		}
+
+		m := d - dist
+		switch {
+		case dist >= 8 && length <= 16 && len(dst)-d >= 16:
+			// short matches are copied as 8 byte words. The source of every word lies completely before its
+			// destination, so this works even if the match overlaps itself. Bytes written past the match are
+			// overwritten later.
+			to, from := dst[d:d+16], dst[m:m+16]
+			binary.LittleEndian.PutUint64(to, binary.LittleEndian.Uint64(from))
+			if length > 8 {
+				binary.LittleEndian.PutUint64(to[8:], binary.LittleEndian.Uint64(from[8:]))
+			}
+			d += length
+		case dist >= length:
+			copy(dst[d:d+length], dst[m:m+length])
+			d += length
+		default:
+			// the match overlaps itself and repeats the last dist bytes: copy everything available so far,
+			// doubling the copied amount every round
+			for end := d + length; d < end; {
+				d += copy(dst[d:end], dst[m:d])
+			}
+		}
+
+		if next > 0 {
+			if len(src)-s >= 4 && len(dst)-d >= 4 {
+				// copy a whole word, the bytes past the literals are overwritten later
+				binary.LittleEndian.PutUint32(dst[d:d+4], binary.LittleEndian.Uint32(src[s:s+4]))
+			} else {
+				copy(dst[d:d+next], src[s:s+next])
+			}
+			d += next
+			s += next
+		}
+		state = next
 	}
-	d.dst.idx += d.lbLen
-	d.curState = d.nextState
 }
 
-//go:inline
-func (d *decoder) countZeroBytes(factor int) (int, error) {
-	old := d.src.idx
-	// count how many zero bytes we have until we hit a non-zero byte
-	for d.src.idx < d.src.end && d.src.data[d.src.idx] == 0 {
-		d.src.idx++
+// extendedLength decodes a length that did not fit into its instruction: base plus 255 for every zero byte,
+// plus the first non-zero byte. It returns the length and the new position in src.
+func extendedLength(src []byte, s, base int) (length, pos int, err error) {
+	start := s
+	for s < len(src) && src[s] == 0 {
+		s++
 	}
-
-	count := d.src.idx - old
-
-	if count > int(max255Count) {
-		return -1, ErrDecompressionFailed
+	count := s - start
+	if uint(count) > max255Count {
+		return 0, s, ErrDecompressionFailed
 	}
-	if d.src.idx+1 > d.src.end {
-		return -1, ErrInputOverrun
+	if s >= len(src) {
+		return 0, s, ErrInputOverrun
 	}
-	offset := count*255 + factor + int(d.src.data[d.src.idx])
-	d.src.idx++
-
-	return offset, nil
-}
-
-//go:inline
-func (d *decoder) getLe16() uint16 {
-	if hostBigEndian {
-		// swap bytes for big endian
-		return uint16(d.src.data[d.src.idx]) | (uint16(d.src.data[d.src.idx+1]) << 8)
-	}
-	return binary.LittleEndian.Uint16(d.src.data[d.src.idx : d.src.idx+2])
+	return base + count*255 + int(src[s]), s + 1, nil
 }

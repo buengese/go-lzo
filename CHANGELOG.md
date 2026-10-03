@@ -8,8 +8,9 @@ upstream releases.
 ### Changed
 
 - The module path is now `github.com/buengese/go-lzo`.
-- `Decompress` copies literal and match runs longer than 8 bytes with `copy()`. This makes it about 1.2× faster on
-  1400 byte packets and up to 2× faster on 128 byte packets.
+- `Decompress` was rewritten as a single loop that copies in whole words where possible. It is 2.5-5× faster on
+  packet-sized inputs (128-1400 bytes) and up to 60× faster on large, repetitive inputs.
+- `Decompress` may now write to all of `dst`, not just the first `outSize` bytes it returns.
 
 ## v0.1.1 (2026-06-24)
 
