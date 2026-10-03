@@ -1,8 +1,3 @@
-/*
-Package lzo is a direct implementation of the LZO decompression algorithm in Go using the following sources as references:
-  - https://docs.kernel.org/staging/lzo.html (linux kernel documentation)
-  - https://github.com/AxioDL/lzokay/blob/db2df1fcbebc2ed06c10f727f72567d40f06a2be/lzokay.cpp (lzokay C++ implementation, MIT licensed)
-*/
 package lzo
 
 import (
@@ -10,12 +5,19 @@ import (
 	"errors"
 )
 
+// Errors returned by Decompress for streams that are corrupt or do not fit into dst.
 var (
-	ErrLookbehindOverrun   = errors.New("lzo: lookbehind overrun")
-	ErrOutputOverrun       = errors.New("lzo: output overrun")
-	ErrInputOverrun        = errors.New("lzo: input overrun")
+	// ErrLookbehindOverrun is returned for a match that starts before the beginning of the decompressed data.
+	ErrLookbehindOverrun = errors.New("lzo: lookbehind overrun")
+	// ErrOutputOverrun is returned if the decompressed data does not fit into dst.
+	ErrOutputOverrun = errors.New("lzo: output overrun")
+	// ErrInputOverrun is returned if the stream ends early: in the middle of an instruction, or without an end of
+	// stream marker.
+	ErrInputOverrun = errors.New("lzo: input overrun")
+	// ErrDecompressionFailed is returned for a malformed end of stream marker, or a length too large to represent.
 	ErrDecompressionFailed = errors.New("lzo: error during decompression")
-	ErrInputNotConsumed    = errors.New("lzo: input not fully consumed")
+	// ErrInputNotConsumed is returned if src continues after the end of stream marker.
+	ErrInputNotConsumed = errors.New("lzo: input not fully consumed")
 )
 
 const (
@@ -46,7 +48,7 @@ const (
 // Decompress decompresses the LZO1X stream in src into dst and returns the decompressed data, a prefix of dst.
 //
 // LZO1X streams do not record the size of the decompressed data: dst only needs to be large enough to hold it.
-// Decompress may use all of dst as scratch space.
+// Decompress may use all of dst as scratch space. It does not allocate.
 //
 // An LZO1X stream is a sequence of instructions, each starting with an opcode byte. Most instructions copy a
 // match, bytes that were decompressed before, followed by 0 to 3 literals, bytes taken verbatim from the stream.

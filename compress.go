@@ -41,6 +41,9 @@ var compressorPool = sync.Pool{New: func() any { return new(Compressor) }}
 // MaxCompressedLen(len(src)) bytes long, and in a newly allocated slice otherwise.
 //
 // The output is never more than a few bytes larger than src, which happens if src does not compress.
+//
+// Compress is safe for concurrent use, it takes a Compressor from a pool. To compress without allocations, use a
+// Compressor directly and pass a large enough dst.
 func Compress(dst, src []byte) []byte {
 	c := compressorPool.Get().(*Compressor)
 	dst = c.Compress(dst, src)
