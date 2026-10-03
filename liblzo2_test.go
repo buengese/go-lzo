@@ -165,11 +165,11 @@ func TestLiblzo2RoundTrip(t *testing.T) {
 					// both with the exact output size and with only an upper bound
 					for _, dstLen := range []int{len(in), len(in) + 64} {
 						dst := make([]byte, dstLen)
-						n, err := Decompress(compressed, dst)
+						out, err := Decompress(dst, compressed)
 						if err != nil {
 							t.Fatalf("%d bytes, dst %d: %v", len(in), dstLen, err)
 						}
-						if !bytes.Equal(dst[:n], in) {
+						if !bytes.Equal(out, in) {
 							t.Fatalf("%d bytes, dst %d: output mismatch", len(in), dstLen)
 						}
 					}
@@ -197,7 +197,7 @@ func TestLiblzo2PacketErrors(t *testing.T) {
 				for i := range compressed {
 					in, maxOut := mut.mutate(compressed[i], originals[i])
 					_, refErr := liblzo2.Decompress(in, maxOut)
-					_, err := Decompress(in, make([]byte, maxOut))
+					_, err := Decompress(make([]byte, maxOut), in)
 					if refErr == nil || err == nil {
 						t.Fatalf("packet %d: liblzo2 err=%v, go err=%v; both must reject", i, refErr, err)
 					}
@@ -223,8 +223,7 @@ func FuzzLiblzo2Differential(f *testing.F) {
 	const maxOut = 1 << 12
 	f.Fuzz(func(t *testing.T, in []byte) {
 		ref, refErr := liblzo2.Decompress(in, maxOut)
-		dst := make([]byte, maxOut)
-		n, err := Decompress(in, dst)
+		out, err := Decompress(make([]byte, maxOut), in)
 
 		// Known difference: liblzo2 accepts an end-of-stream marker with a match length other than 3, we
 		// reject it (like the Linux kernel's decoder). No encoder produces such a marker.
@@ -234,7 +233,7 @@ func FuzzLiblzo2Differential(f *testing.F) {
 		if (refErr == nil) != (err == nil) {
 			t.Fatalf("liblzo2 err=%v, go err=%v for input %x", refErr, err, in)
 		}
-		if err == nil && !bytes.Equal(dst[:n], ref) {
+		if err == nil && !bytes.Equal(out, ref) {
 			t.Fatalf("output mismatch for input %x", in)
 		}
 	})

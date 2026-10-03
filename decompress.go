@@ -43,10 +43,10 @@ const (
 	maxZeroBytes = (^uint(0))/255 - 2
 )
 
-// Decompress decompresses the LZO1X stream in src into dst and returns the size of the decompressed data.
+// Decompress decompresses the LZO1X stream in src into dst and returns the decompressed data, a prefix of dst.
 //
-// dst only needs to be large enough to hold the decompressed data, its exact size does not need to be known.
-// Decompress may use all of dst as scratch space, only the first outSize bytes hold the result.
+// LZO1X streams do not record the size of the decompressed data: dst only needs to be large enough to hold it.
+// Decompress may use all of dst as scratch space.
 //
 // An LZO1X stream is a sequence of instructions, each starting with an opcode byte. Most instructions copy a
 // match, bytes that were decompressed before, followed by 0 to 3 literals, bytes taken verbatim from the stream.
@@ -66,9 +66,9 @@ const (
 // 0x11 0x00 0x00.
 //
 //nolint:funlen,gocognit,gocyclo // a single flat loop keeps the decoder state in registers
-func Decompress(src, dst []byte) (outSize int, err error) {
+func Decompress(dst, src []byte) (out []byte, err error) {
 	if len(src) < minStreamLen {
-		return 0, ErrInputOverrun
+		return nil, ErrInputOverrun
 	}
 
 	// inPos and outPos are the read position in src and the write position in dst
@@ -84,10 +84,10 @@ func Decompress(src, dst []byte) (outSize int, err error) {
 		litLen := int(src[0]) - firstLiteralBias
 		inPos = 1
 		if litLen > len(src)-inPos {
-			return 0, ErrInputOverrun
+			return nil, ErrInputOverrun
 		}
 		if litLen > len(dst) {
-			return 0, ErrOutputOverrun
+			return nil, ErrOutputOverrun
 		}
 		copy(dst[:litLen], src[inPos:inPos+litLen])
 		inPos += litLen
@@ -104,7 +104,7 @@ func Decompress(src, dst []byte) (outSize int, err error) {
 		// Decode the next instruction into a match of matchLen bytes starting matchDist bytes back, followed by
 		// litLen literals. Literal runs and the end of the stream are handled completely in their cases.
 		if inPos >= len(src) {
-			return outPos, ErrInputOverrun
+			return nil, ErrInputOverrun
 		}
 		opcode := int(src[inPos])
 		inPos++
@@ -128,7 +128,7 @@ func Decompress(src, dst []byte) (outSize int, err error) {
 			 *   distance = (H << 3) + D + 1
 			 */
 			if inPos >= len(src) {
-				return outPos, ErrInputOverrun
+				return nil, ErrInputOverrun
 			}
 			matchDist = int(src[inPos])<<3 + (opcode>>2)&7 + 1
 			inPos++
@@ -147,11 +147,11 @@ func Decompress(src, dst []byte) (outSize int, err error) {
 			matchLen = opcode&31 + 2
 			if matchLen == 2 {
 				if matchLen, inPos, err = extendedLength(src, inPos, 2+31); err != nil {
-					return outPos, err
+					return nil, err
 				}
 			}
 			if len(src)-inPos < 2 {
-				return outPos, ErrInputOverrun
+				return nil, ErrInputOverrun
 			}
 			operand := int(binary.LittleEndian.Uint16(src[inPos:]))
 			inPos += 2
@@ -171,11 +171,11 @@ func Decompress(src, dst []byte) (outSize int, err error) {
 			matchLen = opcode&7 + 2
 			if matchLen == 2 {
 				if matchLen, inPos, err = extendedLength(src, inPos, 2+7); err != nil {
-					return outPos, err
+					return nil, err
 				}
 			}
 			if len(src)-inPos < 2 {
-				return outPos, ErrInputOverrun
+				return nil, ErrInputOverrun
 			}
 			operand := int(binary.LittleEndian.Uint16(src[inPos:]))
 			inPos += 2
@@ -185,11 +185,11 @@ func Decompress(src, dst []byte) (outSize int, err error) {
 				/* end of stream, which is always encoded as a 3 byte copy */
 				switch {
 				case matchLen != 3:
-					return outPos, ErrDecompressionFailed
+					return nil, ErrDecompressionFailed
 				case inPos < len(src):
-					return outPos, ErrInputNotConsumed
+					return nil, ErrInputNotConsumed
 				}
-				return outPos, nil
+				return dst[:outPos], nil
 			}
 
 		case state == 0:
@@ -204,14 +204,14 @@ func Decompress(src, dst []byte) (outSize int, err error) {
 			litLen = opcode + 3
 			if litLen == 3 {
 				if litLen, inPos, err = extendedLength(src, inPos, 3+15); err != nil {
-					return outPos, err
+					return nil, err
 				}
 			}
 			if litLen > len(src)-inPos {
-				return outPos, ErrInputOverrun
+				return nil, ErrInputOverrun
 			}
 			if litLen > len(dst)-outPos {
-				return outPos, ErrOutputOverrun
+				return nil, ErrOutputOverrun
 			}
 			if litLen <= 16 && len(src)-inPos >= 16 && len(dst)-outPos >= 16 {
 				copy16(dst[outPos:outPos+16], src[inPos:inPos+16])
@@ -248,7 +248,7 @@ func Decompress(src, dst []byte) (outSize int, err error) {
 			 *    distance = (H << 2) + D + 2049
 			 */
 			if inPos >= len(src) {
-				return outPos, ErrInputOverrun
+				return nil, ErrInputOverrun
 			}
 			matchDist = int(src[inPos])<<2 + opcode>>2 + 1
 			inPos++
@@ -263,13 +263,13 @@ func Decompress(src, dst []byte) (outSize int, err error) {
 		// The match must start within the output written so far, and the literals must be present in src. Both
 		// must fit into dst.
 		if matchDist > outPos {
-			return outPos, ErrLookbehindOverrun
+			return nil, ErrLookbehindOverrun
 		}
 		if litLen > len(src)-inPos {
-			return outPos, ErrInputOverrun
+			return nil, ErrInputOverrun
 		}
 		if matchLen+litLen > len(dst)-outPos {
-			return outPos, ErrOutputOverrun
+			return nil, ErrOutputOverrun
 		}
 
 		// If the match is longer than its distance, it overlaps the bytes it is writing: it repeats the last

@@ -10,7 +10,9 @@ upstream releases.
 - The module path is now `github.com/buengese/go-lzo`.
 - `Decompress` was rewritten as a single loop that copies in whole words where possible. It is 2.5-5× faster on
   packet-sized inputs (128-1400 bytes) and up to 60× faster on large, repetitive inputs.
-- `Decompress` may now write to all of `dst`, not just the first `outSize` bytes it returns.
+- `Decompress(dst, src []byte) ([]byte, error)` replaces `Decompress(src, dst []byte) (int, error)`, following the
+  block APIs of klauspost/compress. It returns the decompressed data, a prefix of `dst`, or `nil` on error.
+- `Decompress` may now write to all of `dst`, not just the part it returns.
 
 ### Removed
 

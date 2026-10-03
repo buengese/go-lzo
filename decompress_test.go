@@ -96,11 +96,10 @@ culpa qui officia deserunt mollit anim id est laborum.`),
 			for _, v := range vs {
 				t.Run(v.Method, func(t *testing.T) {
 					dst := make([]byte, len(tt.Data))
-					n, err := Decompress(v.Compressed, dst)
+					decompressed, err := Decompress(dst, v.Compressed)
 					if err != nil {
 						t.Fatalf("decompression failed: %v", err)
 					}
-					decompressed := dst[:n]
 
 					if !bytes.Equal(decompressed, tt.Data) {
 						t.Errorf("decompressed data doesn't match original")
@@ -135,10 +134,11 @@ func Test_Decompression_Generated(t *testing.T) {
 				dst1 := make([]byte, len(og)*2)
 
 				// subject under test...
-				size1, err1 := Decompress(compressed, dst1)
+				out1, err1 := Decompress(dst1, compressed)
 				if err1 != nil {
 					t.Fatalf("Original decompression failed: %v", err1)
 				}
+				size1 := len(out1)
 
 				// check sizes match
 				if size1 != len(og) {
@@ -175,9 +175,9 @@ func TestLZOEdgeCases(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			n, err := Decompress(tt.data, make([]byte, 1024))
-			if n > 0 {
-				t.Errorf("Expected no output, but got %d bytes", n)
+			out, err := Decompress(make([]byte, 1024), tt.data)
+			if len(out) > 0 {
+				t.Errorf("Expected no output, but got %d bytes", len(out))
 			}
 			if !errors.Is(err, tt.err) {
 				t.Errorf("Expected error %v, got %v", tt.err, err)
@@ -210,7 +210,7 @@ func BenchmarkDecompress(b *testing.B) {
 				b.SetBytes(int64(len(compressed)))
 
 				for i := 0; i < b.N; i++ {
-					_, err := Decompress(compressed, dst)
+					_, err := Decompress(dst, compressed)
 					if err != nil {
 						b.Fatalf("Decompression failed: %v", err)
 					}
@@ -239,7 +239,7 @@ func BenchmarkMemoryAllocations(b *testing.B) {
 	b.Run("Original", func(b *testing.B) {
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
-			Decompress(compressed, dst)
+			_, _ = Decompress(dst, compressed)
 		}
 	})
 
@@ -267,12 +267,12 @@ func FuzzCompressDecompress(f *testing.F) {
 		compressed := v.Compress(t, inputFile)
 
 		dst := make([]byte, len(data)*2)
-		n, err := Decompress(compressed, dst)
+		out, err := Decompress(dst, compressed)
 		if err != nil {
 			saveTestCase(t, data)
 			t.Fatalf("Decompression failed: %v", err)
 		}
-		if !bytes.Equal(dst[:n], data) {
+		if !bytes.Equal(out, data) {
 			saveTestCase(t, data)
 			t.Errorf("Decompressed data does not match original data")
 		}

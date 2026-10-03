@@ -31,7 +31,7 @@ func BenchmarkPacketDecompress(b *testing.B) {
 				b.ReportAllocs()
 				for b.Loop() {
 					for _, c := range compressed {
-						if _, err := Decompress(c, dst); err != nil {
+						if _, err := Decompress(dst, c); err != nil {
 							b.Fatal(err)
 						}
 					}
