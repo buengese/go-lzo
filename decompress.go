@@ -367,9 +367,13 @@ func (d *decoder) handleM1ShortCopy(inst byte) error {
 
 //go:inline
 func (d *decoder) copyLiterals(length int) {
-	// note: benchmarking shows that this is faster than using copy()
-	for i := range length {
-		d.dst.data[d.dst.idx+i] = d.src.data[d.src.idx+i]
+	// note: benchmarking shows a byte loop beats copy() for short runs, but not for longer ones
+	if length > 8 {
+		copy(d.dst.data[d.dst.idx:d.dst.idx+length], d.src.data[d.src.idx:d.src.idx+length])
+	} else {
+		for i := range length {
+			d.dst.data[d.dst.idx+i] = d.src.data[d.src.idx+i]
+		}
 	}
 	d.dst.idx += length
 	d.src.idx += length
@@ -377,9 +381,14 @@ func (d *decoder) copyLiterals(length int) {
 
 //go:inline
 func (d *decoder) copyLookbehind() {
-	// note: benchmarking shows that this is faster than using copy()
-	for i := 0; i < d.lbLen; i++ {
-		d.dst.data[d.dst.idx+i] = d.dst.data[d.lbIdx+i]
+	// note: benchmarking shows a byte loop beats copy() for short runs, but not for longer ones.
+	// overlapping copies (distance < length) must stay byte-wise: they repeat the bytes just written.
+	if d.lbLen > 8 && d.dst.idx-d.lbIdx >= d.lbLen {
+		copy(d.dst.data[d.dst.idx:d.dst.idx+d.lbLen], d.dst.data[d.lbIdx:d.lbIdx+d.lbLen])
+	} else {
+		for i := 0; i < d.lbLen; i++ {
+			d.dst.data[d.dst.idx+i] = d.dst.data[d.lbIdx+i]
+		}
 	}
 	d.dst.idx += d.lbLen
 	d.curState = d.nextState
