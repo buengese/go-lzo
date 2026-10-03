@@ -99,7 +99,7 @@ formatters:
       sections:
         - standard # Standard section: captures all standard packages.
         - default  # Default section: contains all imports that could not be matched to another section type.
-        - prefix(github.com/anchore)
+        - prefix(github.com/buengese)
   exclusions:
     generated: lax
     paths:

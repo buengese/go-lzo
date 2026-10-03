@@ -1,4 +1,4 @@
-module github.com/anchore/go-lzo/.make
+module github.com/buengese/go-lzo/.make
 
 go 1.25.0
 
