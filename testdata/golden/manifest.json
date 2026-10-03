@@ -1,0 +1,167 @@
+[
+  {
+    "name": "backrefs-49152.1x_1.lzo",
+    "size": 49152,
+    "sha256": "3151fa77126fbcd7c9e8628efe43b1d31234a60c0319e7e3dfa5ebe2b50357de"
+  },
+  {
+    "name": "backrefs-49152.1x_1_15.lzo",
+    "size": 49152,
+    "sha256": "3151fa77126fbcd7c9e8628efe43b1d31234a60c0319e7e3dfa5ebe2b50357de"
+  },
+  {
+    "name": "backrefs-49152.1x_999.lzo",
+    "size": 49152,
+    "sha256": "3151fa77126fbcd7c9e8628efe43b1d31234a60c0319e7e3dfa5ebe2b50357de"
+  },
+  {
+    "name": "farmatches-8192.1x_1.lzo",
+    "size": 8192,
+    "sha256": "989c0fe757c01859cd246656fd36387e3788860bb891b1c29901f1290186ea9c"
+  },
+  {
+    "name": "farmatches-8192.1x_1_15.lzo",
+    "size": 8192,
+    "sha256": "989c0fe757c01859cd246656fd36387e3788860bb891b1c29901f1290186ea9c"
+  },
+  {
+    "name": "farmatches-8192.1x_999.lzo",
+    "size": 8192,
+    "sha256": "989c0fe757c01859cd246656fd36387e3788860bb891b1c29901f1290186ea9c"
+  },
+  {
+    "name": "random-1024.1x_1.lzo",
+    "size": 1024,
+    "sha256": "a47a7c5d48ca1be4e62e0be5bcda192feb25b3913c8a2746ef9602028611567c"
+  },
+  {
+    "name": "random-1024.1x_1_15.lzo",
+    "size": 1024,
+    "sha256": "a47a7c5d48ca1be4e62e0be5bcda192feb25b3913c8a2746ef9602028611567c"
+  },
+  {
+    "name": "random-1024.1x_999.lzo",
+    "size": 1024,
+    "sha256": "a47a7c5d48ca1be4e62e0be5bcda192feb25b3913c8a2746ef9602028611567c"
+  },
+  {
+    "name": "records-16384.1x_1.lzo",
+    "size": 16384,
+    "sha256": "82c31c8612ee574813d15565cd20ac37c58a061afd0b1b1c0d4cdf15e1556f8b"
+  },
+  {
+    "name": "records-16384.1x_1_15.lzo",
+    "size": 16384,
+    "sha256": "82c31c8612ee574813d15565cd20ac37c58a061afd0b1b1c0d4cdf15e1556f8b"
+  },
+  {
+    "name": "records-16384.1x_999.lzo",
+    "size": 16384,
+    "sha256": "82c31c8612ee574813d15565cd20ac37c58a061afd0b1b1c0d4cdf15e1556f8b"
+  },
+  {
+    "name": "words-0.1x_1.lzo",
+    "size": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "name": "words-0.1x_1_15.lzo",
+    "size": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "name": "words-0.1x_999.lzo",
+    "size": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "name": "words-1.1x_1.lzo",
+    "size": 1,
+    "sha256": "8254c329a92850f6d539dd376f4816ee2764517da5e0235514af433164480d7a"
+  },
+  {
+    "name": "words-1.1x_1_15.lzo",
+    "size": 1,
+    "sha256": "8254c329a92850f6d539dd376f4816ee2764517da5e0235514af433164480d7a"
+  },
+  {
+    "name": "words-1.1x_999.lzo",
+    "size": 1,
+    "sha256": "8254c329a92850f6d539dd376f4816ee2764517da5e0235514af433164480d7a"
+  },
+  {
+    "name": "words-1400.1x_1.lzo",
+    "size": 1400,
+    "sha256": "ad0b22e9a60be0ac74af8cca69043414c391f9d4f09f9838c62412b6d345889d"
+  },
+  {
+    "name": "words-1400.1x_1_15.lzo",
+    "size": 1400,
+    "sha256": "ad0b22e9a60be0ac74af8cca69043414c391f9d4f09f9838c62412b6d345889d"
+  },
+  {
+    "name": "words-1400.1x_999.lzo",
+    "size": 1400,
+    "sha256": "ad0b22e9a60be0ac74af8cca69043414c391f9d4f09f9838c62412b6d345889d"
+  },
+  {
+    "name": "words-16384.1x_1.lzo",
+    "size": 16384,
+    "sha256": "3a255182c7767811308522a54f55f4f7690b263f82d8de7bf5b2157e87bdbf50"
+  },
+  {
+    "name": "words-16384.1x_1_15.lzo",
+    "size": 16384,
+    "sha256": "3a255182c7767811308522a54f55f4f7690b263f82d8de7bf5b2157e87bdbf50"
+  },
+  {
+    "name": "words-16384.1x_999.lzo",
+    "size": 16384,
+    "sha256": "3a255182c7767811308522a54f55f4f7690b263f82d8de7bf5b2157e87bdbf50"
+  },
+  {
+    "name": "words-17.1x_1.lzo",
+    "size": 17,
+    "sha256": "b47a346ab5e943079d95b8bb67b38d8921aef8d17258a447a17ef9264d4929fc"
+  },
+  {
+    "name": "words-17.1x_1_15.lzo",
+    "size": 17,
+    "sha256": "b47a346ab5e943079d95b8bb67b38d8921aef8d17258a447a17ef9264d4929fc"
+  },
+  {
+    "name": "words-17.1x_999.lzo",
+    "size": 17,
+    "sha256": "b47a346ab5e943079d95b8bb67b38d8921aef8d17258a447a17ef9264d4929fc"
+  },
+  {
+    "name": "words-3.1x_1.lzo",
+    "size": 3,
+    "sha256": "a2f45baa601696ccfe19d187175e3cf6e89917319d50fdb573f6afa4f08ca483"
+  },
+  {
+    "name": "words-3.1x_1_15.lzo",
+    "size": 3,
+    "sha256": "a2f45baa601696ccfe19d187175e3cf6e89917319d50fdb573f6afa4f08ca483"
+  },
+  {
+    "name": "words-3.1x_999.lzo",
+    "size": 3,
+    "sha256": "a2f45baa601696ccfe19d187175e3cf6e89917319d50fdb573f6afa4f08ca483"
+  },
+  {
+    "name": "zeros-4096.1x_1.lzo",
+    "size": 4096,
+    "sha256": "ad7facb2586fc6e966c004d7d1d16b024f5805ff7cb47c7a85dabd8b48892ca7"
+  },
+  {
+    "name": "zeros-4096.1x_1_15.lzo",
+    "size": 4096,
+    "sha256": "ad7facb2586fc6e966c004d7d1d16b024f5805ff7cb47c7a85dabd8b48892ca7"
+  },
+  {
+    "name": "zeros-4096.1x_999.lzo",
+    "size": 4096,
+    "sha256": "ad7facb2586fc6e966c004d7d1d16b024f5805ff7cb47c7a85dabd8b48892ca7"
+  }
+]

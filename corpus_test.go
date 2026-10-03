@@ -4,6 +4,7 @@ package lzo
 
 import (
 	"bytes"
+	"encoding/binary"
 	"math/rand/v2"
 	"os"
 	"os/exec"
@@ -52,6 +53,9 @@ var loadCorpora = sync.OnceValue(func() []corpus {
 		corpus{"random", random},
 		corpus{"zeros", make([]byte, 256<<10)},
 		corpus{"backrefs", syntheticBackrefs(rng, 1<<20)},
+		corpus{"words", syntheticWords(rng, 1<<20)},
+		corpus{"records", syntheticRecords(rng, 1<<20)},
+		corpus{"farmatches", syntheticFarMatches(rng, 256<<10)},
 	)
 	return cs
 })
@@ -94,6 +98,75 @@ func syntheticBackrefs(rng *rand.Rand, size int) []byte {
 		}
 	}
 	return out[:size]
+}
+
+// syntheticWords generates text-like data: sentences of pseudo words, the frequent ones much more frequent than the
+// rare ones, as in natural language. It compresses like text without having to check in third-party text.
+func syntheticWords(rng *rand.Rand, size int) []byte {
+	const consonants, vowels = "bcdfghklmnprstvwz", "aeiou"
+	words := make([]string, 500)
+	for i := range words {
+		var w []byte
+		for range 1 + rng.IntN(4) {
+			w = append(w, consonants[rng.IntN(len(consonants))], vowels[rng.IntN(len(vowels))])
+		}
+		words[i] = string(w)
+	}
+
+	var buf bytes.Buffer
+	for buf.Len() < size {
+		for i := range 4 + rng.IntN(12) {
+			if i > 0 {
+				buf.WriteByte(' ')
+			}
+			buf.WriteString(words[int(rng.ExpFloat64()*40)%len(words)])
+		}
+		buf.WriteString(". ")
+		if rng.IntN(5) == 0 {
+			buf.WriteString("\n")
+		}
+	}
+	return buf.Bytes()[:size]
+}
+
+// syntheticRecords generates binary-like data: fixed size records of little endian fields, with a counter, a
+// slowly growing timestamp, a few distinct flag values and some random bytes.
+func syntheticRecords(rng *rand.Rand, size int) []byte {
+	out := make([]byte, 0, size+16)
+	var timestamp uint32
+	for id := uint32(0); len(out) < size; id++ {
+		timestamp += uint32(rng.IntN(100))
+		out = binary.LittleEndian.AppendUint32(out, id)
+		out = binary.LittleEndian.AppendUint32(out, timestamp)
+		out = binary.LittleEndian.AppendUint32(out, uint32(1<<rng.IntN(4)))
+		out = binary.LittleEndian.AppendUint32(out, rng.Uint32())
+	}
+	return out[:size]
+}
+
+// syntheticFarMatches generates random data with repeats placed so that the cheapest encoding uses the M1
+// instruction for 3 byte matches 2-3kB back after a literal run (followed by 2 literals and a short M2 match),
+// which other data rarely makes an optimal compressor like lzo1x_999 produce.
+func syntheticFarMatches(rng *rand.Rand, size int) []byte {
+	out := make([]byte, 0, size+64)
+	out = append(out, randomBytes(rng, 3072)...)
+	for len(out) < size {
+		out = append(out, randomBytes(rng, 8+rng.IntN(16))...)
+		far := len(out) - 2049 - rng.IntN(1024)
+		out = append(out, out[far:far+3]...)
+		out = append(out, randomBytes(rng, 2)...)
+		near := len(out) - 64 - rng.IntN(64)
+		out = append(out, out[near:near+8]...)
+	}
+	return out[:size]
+}
+
+func randomBytes(rng *rand.Rand, n int) []byte {
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = byte(rng.Uint32())
+	}
+	return b
 }
 
 func corpusByName(tb testing.TB, name string) []byte {

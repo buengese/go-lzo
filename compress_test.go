@@ -25,14 +25,6 @@ func checkRoundTrip(tb testing.TB, c *Compressor, in []byte) []byte {
 	return out
 }
 
-func randomBytes(rng *rand.Rand, n int) []byte {
-	b := make([]byte, n)
-	for i := range b {
-		b[i] = byte(rng.Uint32())
-	}
-	return b
-}
-
 func TestCompressRoundTrip(t *testing.T) {
 	var c Compressor
 	for _, cs := range loadCorpora() {

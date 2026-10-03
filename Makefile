@@ -9,7 +9,7 @@ COUNT ?= 6
 FUZZ ?= FuzzLiblzo2Differential
 FUZZTIME ?= 2m
 
-.PHONY: test test-liblzo2 fuzz bench lint lint-fix
+.PHONY: test test-liblzo2 fuzz bench golden lint lint-fix
 
 test:
 	go test -race ./...
@@ -22,6 +22,9 @@ fuzz:
 
 bench:
 	go test -tags liblzo2 -run '^$$' -bench '$(BENCH)' -count $(COUNT) .
+
+golden:
+	go test -tags liblzo2 -run '^TestLiblzo2UpdateGolden$$' -update-golden .
 
 lint:
 	$(GOLANGCI_LINT) run

@@ -95,3 +95,43 @@ func BenchmarkPacketCompress(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkBlockDecompress decompresses single large blocks, compressed with lzo1x_1_15, where long and
+// overlapping matches matter more than for packets.
+func BenchmarkBlockDecompress(b *testing.B) {
+	for _, name := range []string{"text", "binary", "backrefs", "zeros"} {
+		data := corpusByName(b, name)
+		for _, size := range []int{16 << 10, 64 << 10, 256 << 10} {
+			if size > len(data) {
+				continue
+			}
+			block := data[:size]
+			compressed, err := liblzo2.Compress(liblzo2.LZO1X1_15, block)
+			if err != nil {
+				b.Fatal(err)
+			}
+			prefix := fmt.Sprintf("corpus=%s/size=%d", name, size)
+
+			b.Run(prefix+"/impl=go", func(b *testing.B) {
+				dst := make([]byte, size)
+				b.SetBytes(int64(size))
+				b.ReportAllocs()
+				for b.Loop() {
+					if _, err := Decompress(dst, compressed); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+
+			b.Run(prefix+"/impl=liblzo2", func(b *testing.B) {
+				batch := liblzo2.NewBatch([][]byte{compressed}, size)
+				b.SetBytes(int64(size))
+				for b.Loop() {
+					if _, err := batch.Decompress(); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+		}
+	}
+}

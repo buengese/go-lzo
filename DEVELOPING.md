@@ -3,8 +3,8 @@
 ## Requirements
 
 - Go 1.24+
-- liblzo2 and its headers (`liblzo2-dev` on Debian/Ubuntu, `lzo` on Arch Linux and Homebrew) plus a C/C++ toolchain.
-  The upstream tests can fall back to Docker instead, the differential tests cannot.
+- For the differential tests, fuzzing and benchmarks against liblzo2: liblzo2 and its headers (`liblzo2-dev` on
+  Debian/Ubuntu, `lzo` on Arch Linux and Homebrew) and a C toolchain for cgo. The plain unit tests need neither.
 
 ## Tasks
 
@@ -14,28 +14,32 @@
 | `make test-liblzo2` | unit tests plus the differential tests against liblzo2                                |
 | `make fuzz`         | fuzz the decoder against liblzo2, or the encoder with `FUZZ=FuzzLiblzo2Compress`      |
 |                     | (`FUZZTIME=2m` by default)                                                            |
-| `make bench`        | packet benchmarks against liblzo2 (narrow down with `BENCH=...`, repeat `COUNT=6`)    |
+| `make bench`        | benchmarks against liblzo2 (narrow down with `BENCH=...`, repeat `COUNT=6`)           |
+| `make golden`       | regenerate the golden files in `testdata/golden` with liblzo2                         |
 | `make lint`         | golangci-lint, pinned to the same version as CI                                       |
 | `make lint-fix`     | format and apply lint fixes                                                           |
 
 ## Tests
 
-Two sets of tests check this implementation against liblzo2, the reference implementation:
+The unit tests run without liblzo2:
 
-- The upstream tests (`decompress_test.go`, `fixtures_test.go`) compress generated data with a small C++ tool
-  around liblzo2. They build it to `testdata/bin` with g++, or fall back to a Docker image, and cache fixtures in
-  `testdata/cache`. Inputs of failing tests are saved to `testdata/crash`.
-- The differential tests (`liblzo2_test.go`, build tag `liblzo2`) call liblzo2 directly through cgo
-  (`internal/liblzo2`). They round-trip data through every LZO1X compressor, check OpenVPN-style packet handling
-  (the decoder only gets an upper bound for the output size, and must reject trailing, truncated or oversized input
-  exactly when liblzo2 does), and fuzz both decoders against each other. For the encoder, they check that liblzo2
-  decodes every instruction encoding and everything `Compress` produces, and compare compression ratios with
-  `lzo1x_1_15`.
+- `golden_test.go` decompresses the golden files in `testdata/golden`: streams that liblzo2's `lzo1x_1`,
+  `lzo1x_1_15` and `lzo1x_999` compressors produced from synthetic text, binary records and other generated data, so
+  that no third-party content is checked in. They cover every instruction, including the M1 instructions this
+  package's encoder never produces. Truncated streams, streams with trailing bytes and too small output buffers must
+  be rejected. Regenerate them with `make golden`.
+- `compress_test.go` round-trips data through `Compress` and `Decompress`, and checks every instruction encoding at
+  the limits of its lengths and distances.
+- `decompress_test.go` covers edge cases of the decoder, like empty and malformed streams.
 
-The encoder's own tests (`compress_test.go`) round-trip data through `Compress` and `Decompress` without liblzo2.
+The differential tests (`liblzo2_*test.go`, build tag `liblzo2`) call liblzo2 directly through cgo
+(`internal/liblzo2`). They round-trip data through every LZO1X compressor, check OpenVPN-style packet handling (the
+decoder only gets an upper bound for the output size, and must reject trailing, truncated or oversized input exactly
+when liblzo2 does), and fuzz both decoders against each other. For the encoder, they check that liblzo2 decodes every
+instruction encoding and everything `Compress` produces, and compare compression ratios with `lzo1x_1_15`.
 
-The differential tests use the local Go installation (`net/http` sources, the language spec, the `go` binary) and
-synthetic data as input, so no test data needs to be checked in.
+The other test inputs come from the local Go installation (`net/http` sources, the language spec, the `go` binary)
+and the same generators, so only the golden files need to be checked in.
 
 One difference is known and accepted: liblzo2 accepts an end-of-stream marker with a match length other than 3, this
 decoder rejects it like the Linux kernel's decoder does. No encoder produces such a marker.
@@ -44,10 +48,11 @@ To work on the tagged files in your editor, add `-tags=liblzo2` to gopls' `build
 
 ## Benchmarks
 
-`BenchmarkPacketDecompress` and `BenchmarkPacketCompress` use packets of 128 to 1400 bytes. The decompression
-benchmark uses packets compressed the way an OpenVPN 2.x peer does it: with `lzo1x_1_15`, and only kept if that
-saves space. The compression benchmark compares with `lzo1x_1_15` and reports the output size relative to the input
-as `ratio`. liblzo2 processes all packets in a single cgo call so that cgo overhead does not count against it.
+`BenchmarkPacketDecompress` and `BenchmarkPacketCompress` use packets of 128 to 1400 bytes, `BenchmarkBlockDecompress`
+single blocks of 16 to 256kB. The decompression benchmarks use data compressed the way an OpenVPN 2.x peer does it:
+with `lzo1x_1_15`, and packets are only kept if that saves space. The compression benchmark compares with
+`lzo1x_1_15` and reports the output size relative to the input as `ratio`. liblzo2 processes all packets in a single
+cgo call so that cgo overhead does not count against it.
 Compare results with [benchstat](https://pkg.go.dev/golang.org/x/perf/cmd/benchstat):
 
 ```sh
