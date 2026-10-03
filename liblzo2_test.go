@@ -9,124 +9,10 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"math/rand/v2"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"strings"
-	"sync"
 	"testing"
 
 	"github.com/buengese/go-lzo/internal/liblzo2"
 )
-
-// packetSizes covers OpenVPN-style packets: OpenVPN only compresses packets of at least 100 bytes and most
-// traffic is close to the MTU.
-var packetSizes = []int{128, 256, 512, 1024, 1400}
-
-// maxPacketOut mirrors how OpenVPN decompresses: the output buffer has the size of the largest possible
-// payload, the decoder never learns the exact uncompressed length.
-const maxPacketOut = 1 << 16
-
-type corpus struct {
-	name string
-	data []byte
-}
-
-// loadCorpora returns deterministic test inputs: text, HTML and a binary from the local Go installation (so
-// nothing needs to be vendored), plus synthetic data. GOROOT inputs that cannot be found are skipped.
-var loadCorpora = sync.OnceValue(func() []corpus {
-	var cs []corpus
-	if out, err := exec.Command("go", "env", "GOROOT").Output(); err == nil {
-		goroot := strings.TrimSpace(string(out))
-		if text := readGoSources(filepath.Join(goroot, "src", "net", "http")); len(text) > 0 {
-			cs = append(cs, corpus{"text", text})
-		}
-		if html, err := os.ReadFile(filepath.Join(goroot, "doc", "go_spec.html")); err == nil {
-			cs = append(cs, corpus{"html", html})
-		}
-		if bin, err := os.ReadFile(filepath.Join(goroot, "bin", "go")); err == nil {
-			cs = append(cs, corpus{"binary", bin[:min(len(bin), 4<<20)]})
-		}
-	}
-
-	rng := rand.New(rand.NewPCG(1, 2))
-	random := make([]byte, 1<<20)
-	for i := range random {
-		random[i] = byte(rng.Uint32())
-	}
-	cs = append(cs,
-		corpus{"random", random},
-		corpus{"zeros", make([]byte, 256<<10)},
-		corpus{"backrefs", syntheticBackrefs(rng, 1<<20)},
-	)
-	return cs
-})
-
-// readGoSources concatenates the non-test Go files of a directory, capped at 4MB.
-func readGoSources(dir string) []byte {
-	files, _ := filepath.Glob(filepath.Join(dir, "*.go"))
-	var buf bytes.Buffer
-	for _, f := range files {
-		if strings.HasSuffix(f, "_test.go") {
-			continue
-		}
-		data, err := os.ReadFile(f)
-		if err != nil {
-			continue
-		}
-		buf.Write(data)
-		if buf.Len() >= 4<<20 {
-			break
-		}
-	}
-	return buf.Bytes()
-}
-
-// syntheticBackrefs mixes random runs with copies of earlier data at distances up to 64KB, so that every
-// match type, including the 16-48KB M4 matches and overlapping copies, shows up in compressed output.
-func syntheticBackrefs(rng *rand.Rand, size int) []byte {
-	out := make([]byte, 0, size+4096)
-	for len(out) < size {
-		if len(out) == 0 || rng.IntN(3) == 0 {
-			for range rng.IntN(64) + 1 {
-				out = append(out, byte(rng.Uint32()))
-			}
-			continue
-		}
-		dist := rng.IntN(min(len(out), 64<<10)) + 1
-		start := len(out) - dist
-		for i := range rng.IntN(300) + 2 {
-			out = append(out, out[start+i])
-		}
-	}
-	return out[:size]
-}
-
-func corpusByName(tb testing.TB, name string) []byte {
-	tb.Helper()
-	for _, c := range loadCorpora() {
-		if c.name == name {
-			return c.data
-		}
-	}
-	tb.Skipf("corpus %q not available", name)
-	return nil
-}
-
-// packets cuts n packets of the given size out of data at deterministic offsets.
-func packets(data []byte, size, n int) [][]byte {
-	if len(data) < size {
-		return nil
-	}
-	rng := rand.New(rand.NewPCG(uint64(size), uint64(n)))
-	ps := make([][]byte, n)
-	for i := range ps {
-		off := rng.IntN(len(data) - size + 1)
-		ps[i] = data[off : off+size]
-	}
-	return ps
-}
 
 // compressedPackets returns packets the way an OpenVPN 2.x peer sends them: compressed with lzo1x_1_15,
 // and only when that actually saves space. It also returns the original packets that were kept.
@@ -147,14 +33,7 @@ func compressedPackets(tb testing.TB, data []byte, size, n int) (compressed, ori
 
 func TestLiblzo2RoundTrip(t *testing.T) {
 	for _, c := range loadCorpora() {
-		inputs := [][]byte{c.data[:min(len(c.data), 1<<20)]}
-		for n := range 24 {
-			inputs = append(inputs, c.data[:min(len(c.data), n)])
-		}
-		for _, size := range packetSizes {
-			inputs = append(inputs, packets(c.data, size, 32)...)
-		}
-
+		inputs := roundTripInputs(c.data)
 		for _, m := range liblzo2.Methods {
 			t.Run(fmt.Sprintf("%s/%s", c.name, m), func(t *testing.T) {
 				for _, in := range inputs {
@@ -235,6 +114,78 @@ func FuzzLiblzo2Differential(f *testing.F) {
 		}
 		if err == nil && !bytes.Equal(out, ref) {
 			t.Fatalf("output mismatch for input %x", in)
+		}
+	})
+}
+
+// TestLiblzo2DecodesEncodings checks every instruction encoding the encoder can produce against liblzo2.
+func TestLiblzo2DecodesEncodings(t *testing.T) {
+	for _, tc := range encodingCases() {
+		got, err := liblzo2.Decompress(tc.stream, len(tc.want))
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if !bytes.Equal(got, tc.want) {
+			t.Fatalf("%s: decompressed data differs", tc.name)
+		}
+	}
+}
+
+// TestLiblzo2DecodesCompress checks that liblzo2, which OpenVPN peers use, decodes what Compress produces.
+func TestLiblzo2DecodesCompress(t *testing.T) {
+	var c Compressor
+	for _, cs := range loadCorpora() {
+		t.Run(cs.name, func(t *testing.T) {
+			for _, in := range roundTripInputs(cs.data) {
+				got, err := liblzo2.Decompress(c.Compress(nil, in), len(in))
+				if err != nil {
+					t.Fatalf("%d bytes: %v", len(in), err)
+				}
+				if !bytes.Equal(got, in) {
+					t.Fatalf("%d bytes: decompressed data differs", len(in))
+				}
+			}
+		})
+	}
+}
+
+// TestLiblzo2CompressionRatio logs how well Compress compresses packets compared to lzo1x_1_15, which OpenVPN
+// uses.
+func TestLiblzo2CompressionRatio(t *testing.T) {
+	var c Compressor
+	for _, name := range []string{"text", "html", "binary"} {
+		data := corpusByName(t, name)
+		for _, size := range packetSizes {
+			raw, ours, ref := 0, 0, 0
+			for _, p := range packets(data, size, 256) {
+				out, err := liblzo2.Compress(liblzo2.LZO1X1_15, p)
+				if err != nil {
+					t.Fatal(err)
+				}
+				raw += len(p)
+				ref += len(out)
+				ours += len(c.Compress(nil, p))
+			}
+			t.Logf("%-6s %4d bytes: go %.1f%%, lzo1x_1_15 %.1f%%", name, size,
+				100*float64(ours)/float64(raw), 100*float64(ref)/float64(raw))
+		}
+	}
+}
+
+// FuzzLiblzo2Compress checks that liblzo2 decodes what Compress produces for arbitrary input.
+func FuzzLiblzo2Compress(f *testing.F) {
+	for _, cs := range loadCorpora() {
+		for _, p := range packets(cs.data, 256, 2) {
+			f.Add(p)
+		}
+	}
+	f.Fuzz(func(t *testing.T, in []byte) {
+		got, err := liblzo2.Decompress(Compress(nil, in), len(in))
+		if err != nil {
+			t.Fatalf("%d bytes: %v", len(in), err)
+		}
+		if !bytes.Equal(got, in) {
+			t.Fatalf("%d bytes: decompressed data differs", len(in))
 		}
 	})
 }

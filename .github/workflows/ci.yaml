@@ -58,5 +58,8 @@ jobs:
       - name: Test
         run: go test -race -tags liblzo2 ./...
 
-      - name: Fuzz against liblzo2
+      - name: Fuzz the decoder against liblzo2
         run: go test -tags liblzo2 -run '^$' -fuzz '^FuzzLiblzo2Differential$' -fuzztime 30s .
+
+      - name: Fuzz the encoder against liblzo2
+        run: go test -tags liblzo2 -run '^$' -fuzz '^FuzzLiblzo2Compress$' -fuzztime 30s .

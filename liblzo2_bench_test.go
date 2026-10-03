@@ -51,9 +51,9 @@ func BenchmarkPacketDecompress(b *testing.B) {
 	}
 }
 
-// BenchmarkPacketCompress has no Go implementation to compare yet; it records the target for the encoder.
-// Random input matters as much as compressible input: OpenVPN tries to compress every packet, and most
-// traffic is already encrypted.
+// BenchmarkPacketCompress compares with lzo1x_1_15, which OpenVPN uses, and reports the size of the output as
+// a ratio of the input. Random input matters as much as compressible input: OpenVPN tries to compress every
+// packet, and most traffic is already encrypted.
 func BenchmarkPacketCompress(b *testing.B) {
 	for _, name := range []string{"text", "binary", "random"} {
 		data := corpusByName(b, name)
@@ -63,15 +63,34 @@ func BenchmarkPacketCompress(b *testing.B) {
 			for _, p := range ps {
 				raw += len(p)
 			}
+			prefix := fmt.Sprintf("corpus=%s/size=%d", name, size)
 
-			b.Run(fmt.Sprintf("corpus=%s/size=%d/impl=liblzo2", name, size), func(b *testing.B) {
+			b.Run(prefix+"/impl=go", func(b *testing.B) {
+				var c Compressor
+				dst := make([]byte, MaxCompressedLen(size))
+				compressed := 0
+				b.SetBytes(int64(raw))
+				b.ReportAllocs()
+				for b.Loop() {
+					compressed = 0
+					for _, p := range ps {
+						compressed += len(c.Compress(dst, p))
+					}
+				}
+				b.ReportMetric(float64(compressed)/float64(raw), "ratio")
+			})
+
+			b.Run(prefix+"/impl=liblzo2", func(b *testing.B) {
 				batch := liblzo2.NewBatch(ps, maxPacketOut)
+				compressed := 0
 				b.SetBytes(int64(raw))
 				for b.Loop() {
-					if _, err := batch.Compress(liblzo2.LZO1X1_15); err != nil {
+					var err error
+					if compressed, err = batch.Compress(liblzo2.LZO1X1_15); err != nil {
 						b.Fatal(err)
 					}
 				}
+				b.ReportMetric(float64(compressed)/float64(raw), "ratio")
 			})
 		}
 	}

@@ -5,6 +5,11 @@ upstream releases.
 
 ## Unreleased
 
+### Added
+
+- LZO1X compression: `Compress`, `Compressor` and `MaxCompressedLen`. Its output decompresses with liblzo2, and on
+  packet-sized inputs it is slightly smaller than that of `lzo1x_1_15`, the compressor OpenVPN uses.
+
 ### Changed
 
 - The module path is now `github.com/buengese/go-lzo`.

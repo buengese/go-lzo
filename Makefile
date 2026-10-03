@@ -6,6 +6,7 @@ GOLANGCI_LINT := go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$
 
 BENCH ?= .
 COUNT ?= 6
+FUZZ ?= FuzzLiblzo2Differential
 FUZZTIME ?= 2m
 
 .PHONY: test test-liblzo2 fuzz bench lint lint-fix
@@ -17,7 +18,7 @@ test-liblzo2:
 	go test -race -tags liblzo2 ./...
 
 fuzz:
-	go test -tags liblzo2 -run '^$$' -fuzz '^FuzzLiblzo2Differential$$' -fuzztime $(FUZZTIME) .
+	go test -tags liblzo2 -run '^$$' -fuzz '^$(FUZZ)$$' -fuzztime $(FUZZTIME) .
 
 bench:
 	go test -tags liblzo2 -run '^$$' -bench '$(BENCH)' -count $(COUNT) .

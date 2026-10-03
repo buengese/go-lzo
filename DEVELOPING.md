@@ -8,14 +8,15 @@
 
 ## Tasks
 
-| Command              | What it does                                                                        |
-|----------------------|-------------------------------------------------------------------------------------|
-| `make test`          | unit tests                                                                          |
-| `make test-liblzo2`  | unit tests plus the differential tests against liblzo2                              |
-| `make fuzz`          | fuzz the decoder against liblzo2 (`FUZZTIME=2m` by default)                         |
-| `make bench`         | packet benchmarks against liblzo2 (narrow down with `BENCH=...`, repeat `COUNT=6`)  |
-| `make lint`          | golangci-lint, pinned to the same version as CI                                     |
-| `make lint-fix`      | format and apply lint fixes                                                         |
+| Command             | What it does                                                                          |
+|---------------------|---------------------------------------------------------------------------------------|
+| `make test`         | unit tests                                                                            |
+| `make test-liblzo2` | unit tests plus the differential tests against liblzo2                                |
+| `make fuzz`         | fuzz the decoder against liblzo2, or the encoder with `FUZZ=FuzzLiblzo2Compress`      |
+|                     | (`FUZZTIME=2m` by default)                                                            |
+| `make bench`        | packet benchmarks against liblzo2 (narrow down with `BENCH=...`, repeat `COUNT=6`)    |
+| `make lint`         | golangci-lint, pinned to the same version as CI                                       |
+| `make lint-fix`     | format and apply lint fixes                                                           |
 
 ## Tests
 
@@ -27,7 +28,11 @@ Two sets of tests check this implementation against liblzo2, the reference imple
 - The differential tests (`liblzo2_test.go`, build tag `liblzo2`) call liblzo2 directly through cgo
   (`internal/liblzo2`). They round-trip data through every LZO1X compressor, check OpenVPN-style packet handling
   (the decoder only gets an upper bound for the output size, and must reject trailing, truncated or oversized input
-  exactly when liblzo2 does), and fuzz both decoders against each other.
+  exactly when liblzo2 does), and fuzz both decoders against each other. For the encoder, they check that liblzo2
+  decodes every instruction encoding and everything `Compress` produces, and compare compression ratios with
+  `lzo1x_1_15`.
+
+The encoder's own tests (`compress_test.go`) round-trip data through `Compress` and `Decompress` without liblzo2.
 
 The differential tests use the local Go installation (`net/http` sources, the language spec, the `go` binary) and
 synthetic data as input, so no test data needs to be checked in.
@@ -39,10 +44,11 @@ To work on the tagged files in your editor, add `-tags=liblzo2` to gopls' `build
 
 ## Benchmarks
 
-`BenchmarkPacketDecompress` and `BenchmarkPacketCompress` use packets of 128 to 1400 bytes, compressed the way an
-OpenVPN 2.x peer does it: with `lzo1x_1_15`, and only kept if that saves space. liblzo2 processes all packets in a
-single cgo call so that cgo overhead does not count against it. Compare results with
-[benchstat](https://pkg.go.dev/golang.org/x/perf/cmd/benchstat):
+`BenchmarkPacketDecompress` and `BenchmarkPacketCompress` use packets of 128 to 1400 bytes. The decompression
+benchmark uses packets compressed the way an OpenVPN 2.x peer does it: with `lzo1x_1_15`, and only kept if that
+saves space. The compression benchmark compares with `lzo1x_1_15` and reports the output size relative to the input
+as `ratio`. liblzo2 processes all packets in a single cgo call so that cgo overhead does not count against it.
+Compare results with [benchstat](https://pkg.go.dev/golang.org/x/perf/cmd/benchstat):
 
 ```sh
 make bench BENCH=PacketDecompress > new.txt
