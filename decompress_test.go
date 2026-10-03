@@ -2,8 +2,8 @@ package lzo
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -95,11 +95,12 @@ culpa qui officia deserunt mollit anim id est laborum.`),
 			vs := compressFixture(t, tt.Name, tt.Data)
 			for _, v := range vs {
 				t.Run(v.Method, func(t *testing.T) {
-					reader := NewReader(bytes.NewReader(v.Compressed))
-					decompressed, err := io.ReadAll(reader)
+					dst := make([]byte, len(tt.Data))
+					n, err := Decompress(v.Compressed, dst)
 					if err != nil {
 						t.Fatalf("decompression failed: %v", err)
 					}
+					decompressed := dst[:n]
 
 					if !bytes.Equal(decompressed, tt.Data) {
 						t.Errorf("decompressed data doesn't match original")
@@ -156,34 +157,30 @@ func Test_Decompression_Generated(t *testing.T) {
 
 func TestLZOEdgeCases(t *testing.T) {
 	tests := []struct {
-		name        string
-		data        []byte
-		expectError bool
+		name string
+		data []byte
+		err  error
 	}{
 		{
-			name:        "too_short_input",
-			data:        []byte{0x00, 0x01},
-			expectError: false, // this isn't an error case explicitly
+			name: "too_short_input",
+			data: []byte{0x00, 0x01},
+			err:  ErrInputOverrun,
 		},
 		{
-			name:        "invalid_instruction",
-			data:        []byte{0x00, 0x00, 0x00},
-			expectError: true,
+			name: "invalid_instruction",
+			data: []byte{0x00, 0x00, 0x00},
+			err:  ErrInputOverrun,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			reader := NewReader(bytes.NewReader(tt.data))
-			contents, err := io.ReadAll(reader)
-
-			if len(contents) > 0 {
-				t.Errorf("Expected no output, but got %d bytes", len(contents))
+			n, err := Decompress(tt.data, make([]byte, 1024))
+			if n > 0 {
+				t.Errorf("Expected no output, but got %d bytes", n)
 			}
-			if tt.expectError && err == nil {
-				t.Error("Expected error but got none")
-			} else if !tt.expectError && err != nil {
-				t.Errorf("Unexpected error: %v", err)
+			if !errors.Is(err, tt.err) {
+				t.Errorf("Expected error %v, got %v", tt.err, err)
 			}
 		})
 	}

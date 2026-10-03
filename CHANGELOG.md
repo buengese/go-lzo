@@ -12,6 +12,11 @@ upstream releases.
   packet-sized inputs (128-1400 bytes) and up to 60× faster on large, repetitive inputs.
 - `Decompress` may now write to all of `dst`, not just the first `outSize` bytes it returns.
 
+### Removed
+
+- `Reader`. It treated everything it read at once as a single LZO1X block of at most 64KB, so it failed on larger
+  or fragmented input. Use `Decompress` instead.
+
 ## v0.1.1 (2026-06-24)
 
 Upstream release with CI and release tooling changes only, the library itself did not change.

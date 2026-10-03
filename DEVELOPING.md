@@ -21,9 +21,9 @@
 
 Two sets of tests check this implementation against liblzo2, the reference implementation:
 
-- The upstream tests (`reader_test.go`) compress generated data with a small C++ tool around liblzo2. They build it
-  to `testdata/bin` with g++, or fall back to a Docker image, and cache fixtures in `testdata/cache`. Inputs of
-  failing tests are saved to `testdata/crash`.
+- The upstream tests (`decompress_test.go`, `fixtures_test.go`) compress generated data with a small C++ tool
+  around liblzo2. They build it to `testdata/bin` with g++, or fall back to a Docker image, and cache fixtures in
+  `testdata/cache`. Inputs of failing tests are saved to `testdata/crash`.
 - The differential tests (`liblzo2_test.go`, build tag `liblzo2`) call liblzo2 directly through cgo
   (`internal/liblzo2`). They round-trip data through every LZO1X compressor, check OpenVPN-style packet handling
   (the decoder only gets an upper bound for the output size, and must reject trailing, truncated or oversized input
