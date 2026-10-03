@@ -10,8 +10,6 @@ import (
 	"errors"
 )
 
-const max255Count = (^uint(0))/255 - 2
-
 var (
 	ErrLookbehindOverrun   = errors.New("lzo: lookbehind overrun")
 	ErrOutputOverrun       = errors.New("lzo: output overrun")
@@ -20,51 +18,81 @@ var (
 	ErrInputNotConsumed    = errors.New("lzo: input not fully consumed")
 )
 
-// Decompress the given LZO1X compressed data to the destination buffer.
+const (
+	// lower bounds of the opcode ranges, see the table in the documentation of Decompress
+	m2Marker = 0x40
+	m3Marker = 0x20
+	m4Marker = 0x10
+
+	// a first byte above firstLiteralBias starts the stream with (first byte - firstLiteralBias) literals
+	firstLiteralBias = 17
+
+	// the state after copying 4 or more literals
+	stateManyLiterals = 4
+
+	// M1 matches after 4 or more literals start this much further back than the ones after 1 to 3 literals
+	m1FarDistance = 2048
+
+	// M4 matches start 16kB back, a distance of exactly 16kB marks the end of the stream
+	m4Distance = 16384
+
+	// the shortest stream is the 3 byte end of stream marker
+	minStreamLen = 3
+
+	// every zero byte of an extended length adds 255, more zero bytes than this would overflow the length
+	maxZeroBytes = (^uint(0))/255 - 2
+)
+
+// Decompress decompresses the LZO1X stream in src into dst and returns the size of the decompressed data.
 //
-// dstBytes only needs to be large enough to hold the decompressed data. Decompress may use all of dstBytes as
-// scratch space, only the first outSize bytes hold the result.
+// dst only needs to be large enough to hold the decompressed data, its exact size does not need to be known.
+// Decompress may use all of dst as scratch space, only the first outSize bytes hold the result.
 //
-// Here's a summary of the state machine:
+// An LZO1X stream is a sequence of instructions, each starting with an opcode byte. Most instructions copy a
+// match, bytes that were decompressed before, followed by 0 to 3 literals, bytes taken verbatim from the stream.
+// How opcodes 0x00..0x0f are read depends on the decoder's state, the number of literals copied by the previous
+// instruction:
 //
-//	Instruction    Bits        Description
-//	-------------- ------------ -------------------------------------------------
-//	M1 (short)     0x00..0x0F  copy 2-3 bytes based on previous literal state
-//	M1 (long)      0x00..0x0F  when state==0, long literal run (>=4 bytes)
-//	M2             0x40..0xFF  copy 3-8 bytes within 2kB distance
-//	M3             0x20..0x3F  copy small block within 16kB distance
-//	M4             0x10..0x1F  copy block within 16..48kB, end-of-stream if distance==16384
+//	Opcode      State  Instruction
+//	----------  -----  ------------------------------------------------------
+//	0x00..0x0f  0      literal run: copy 4 or more literals
+//	0x00..0x0f  1..3   M1: copy 2 bytes from up to 1kB back
+//	0x00..0x0f  4+     M1: copy 3 bytes from 2..3kB back
+//	0x10..0x1f  any    M4: copy from 16..48kB back, or end of stream
+//	0x20..0x3f  any    M3: copy from up to 16kB back
+//	0x40..0xff  any    M2: copy 3-8 bytes from up to 2kB back
+//
+// The first byte of a stream can also start it with a literal run, and every stream ends with the M4 instruction
+// 0x11 0x00 0x00.
 //
 //nolint:funlen,gocognit,gocyclo // a single flat loop keeps the decoder state in registers
-func Decompress(srcBytes, dstBytes []byte) (outSize int, err error) {
-	src, dst := srcBytes, dstBytes
-	if len(src) < 3 {
+func Decompress(src, dst []byte) (outSize int, err error) {
+	if len(src) < minStreamLen {
 		return 0, ErrInputOverrun
 	}
 
-	// s and d are the positions in src and dst. state is the number of literals copied by the last instruction
-	// (4 meaning 4 or more), it decides how instructions 0..15 are interpreted.
-	var s, d, state int
+	// inPos and outPos are the read position in src and the write position in dst
+	var inPos, outPos, state int
 
-	if src[0] >= 18 {
+	if src[0] > firstLiteralBias {
 		/* 18..21 : copy 1..4 literals
 		 *          state = (byte - 17)
 		 * 22..255 : copy literal string
 		 *           length = (byte - 17) = 5..238
 		 *           state = 4 [ don't copy extra literals ]
 		 */
-		n := int(src[0]) - 17
-		s = 1
-		if n > len(src)-s {
+		litLen := int(src[0]) - firstLiteralBias
+		inPos = 1
+		if litLen > len(src)-inPos {
 			return 0, ErrInputOverrun
 		}
-		if n > len(dst) {
+		if litLen > len(dst) {
 			return 0, ErrOutputOverrun
 		}
-		copy(dst[:n], src[s:s+n])
-		s += n
-		d = n
-		state = min(n, 4)
+		copy(dst[:litLen], src[inPos:inPos+litLen])
+		inPos += litLen
+		outPos = litLen
+		state = min(litLen, stateManyLiterals)
 	}
 	/* 0..17 : follow regular instruction encoding, see below. It is worth
 	 *         noting that codes 16 and 17 will represent a block copy from
@@ -73,17 +101,17 @@ func Decompress(srcBytes, dstBytes []byte) (outSize int, err error) {
 	 */
 
 	for {
-		if s >= len(src) {
-			return d, ErrInputOverrun
+		// Decode the next instruction into a match of matchLen bytes starting matchDist bytes back, followed by
+		// litLen literals. Literal runs and the end of the stream are handled completely in their cases.
+		if inPos >= len(src) {
+			return outPos, ErrInputOverrun
 		}
-		inst := int(src[s])
-		s++
+		opcode := int(src[inPos])
+		inPos++
 
-		// every instruction except a long literal run copies length bytes from dist bytes back, followed by
-		// next (0..3) literals
-		var dist, length, next int
+		var matchDist, matchLen, litLen int
 		switch {
-		case inst >= 64:
+		case opcode >= m2Marker:
 			/* [M2]
 			 * 1 L L D D D S S  (128..255)
 			 *   Copy 5-8 bytes from block within 2kB distance
@@ -99,15 +127,15 @@ func Decompress(srcBytes, dstBytes []byte) (outSize int, err error) {
 			 * Always followed by exactly one byte : H H H H H H H H
 			 *   distance = (H << 3) + D + 1
 			 */
-			if s >= len(src) {
-				return d, ErrInputOverrun
+			if inPos >= len(src) {
+				return outPos, ErrInputOverrun
 			}
-			dist = int(src[s])<<3 + (inst>>2)&7 + 1
-			s++
-			length = inst>>5 + 1
-			next = inst & 3
+			matchDist = int(src[inPos])<<3 + (opcode>>2)&7 + 1
+			inPos++
+			matchLen = opcode>>5 + 1
+			litLen = opcode & 3
 
-		case inst >= 32:
+		case opcode >= m3Marker:
 			/* [M3]
 			 * 0 0 1 L L L L L  (32..63)
 			 *   Copy of small block within 16kB distance (preferably less than 34B)
@@ -116,21 +144,21 @@ func Decompress(srcBytes, dstBytes []byte) (outSize int, err error) {
 			 *   distance = D + 1
 			 *   state = S (copy S literals after this block)
 			 */
-			length = inst&31 + 2
-			if length == 2 {
-				if length, s, err = extendedLength(src, s, 2+31); err != nil {
-					return d, err
+			matchLen = opcode&31 + 2
+			if matchLen == 2 {
+				if matchLen, inPos, err = extendedLength(src, inPos, 2+31); err != nil {
+					return outPos, err
 				}
 			}
-			if len(src)-s < 2 {
-				return d, ErrInputOverrun
+			if len(src)-inPos < 2 {
+				return outPos, ErrInputOverrun
 			}
-			v := int(binary.LittleEndian.Uint16(src[s:]))
-			s += 2
-			dist = v>>2 + 1
-			next = v & 3
+			operand := int(binary.LittleEndian.Uint16(src[inPos:]))
+			inPos += 2
+			matchDist = operand>>2 + 1
+			litLen = operand & 3
 
-		case inst >= 16:
+		case opcode >= m4Marker:
 			/* [M4]
 			 * 0 0 0 1 H L L L  (16..31)
 			 *   Copy of a block within 16..48kB distance (preferably less than 10B)
@@ -140,30 +168,29 @@ func Decompress(srcBytes, dstBytes []byte) (outSize int, err error) {
 			 *   state = S (copy S literals after this block)
 			 *   End of stream is reached if distance == 16384
 			 */
-			length = inst&7 + 2
-			if length == 2 {
-				if length, s, err = extendedLength(src, s, 2+7); err != nil {
-					return d, err
+			matchLen = opcode&7 + 2
+			if matchLen == 2 {
+				if matchLen, inPos, err = extendedLength(src, inPos, 2+7); err != nil {
+					return outPos, err
 				}
 			}
-			if len(src)-s < 2 {
-				return d, ErrInputOverrun
+			if len(src)-inPos < 2 {
+				return outPos, ErrInputOverrun
 			}
-			v := int(binary.LittleEndian.Uint16(src[s:]))
-			s += 2
-			dist = (inst&8)<<11 + v>>2
-			next = v & 3
-			if dist == 0 {
-				/* stream finished, the terminating M4 must be a 3 byte copy */
+			operand := int(binary.LittleEndian.Uint16(src[inPos:]))
+			inPos += 2
+			matchDist = m4Distance + (opcode&8)<<11 + operand>>2
+			litLen = operand & 3
+			if matchDist == m4Distance {
+				/* end of stream, which is always encoded as a 3 byte copy */
 				switch {
-				case length != 3:
-					return d, ErrDecompressionFailed
-				case s < len(src):
-					return d, ErrInputNotConsumed
+				case matchLen != 3:
+					return outPos, ErrDecompressionFailed
+				case inPos < len(src):
+					return outPos, ErrInputNotConsumed
 				}
-				return d, nil
+				return outPos, nil
 			}
-			dist += 16384
 
 		case state == 0:
 			/* If last instruction did not copy any literal (state == 0), this
@@ -174,29 +201,26 @@ func Decompress(srcBytes, dstBytes []byte) (outSize int, err error) {
 			 *    length = 3 + (L ?: 15 + (zero_bytes * 255) + non_zero_byte)
 			 *    state = 4  (no extra literals are copied)
 			 */
-			n := inst + 3
-			if n == 3 {
-				if n, s, err = extendedLength(src, s, 3+15); err != nil {
-					return d, err
+			litLen = opcode + 3
+			if litLen == 3 {
+				if litLen, inPos, err = extendedLength(src, inPos, 3+15); err != nil {
+					return outPos, err
 				}
 			}
-			if n > len(src)-s {
-				return d, ErrInputOverrun
+			if litLen > len(src)-inPos {
+				return outPos, ErrInputOverrun
 			}
-			if n > len(dst)-d {
-				return d, ErrOutputOverrun
+			if litLen > len(dst)-outPos {
+				return outPos, ErrOutputOverrun
 			}
-			if n <= 16 && len(src)-s >= 16 && len(dst)-d >= 16 {
-				// copy whole words, the bytes past the literals are overwritten later
-				to, from := dst[d:d+16], src[s:s+16]
-				binary.LittleEndian.PutUint64(to, binary.LittleEndian.Uint64(from))
-				binary.LittleEndian.PutUint64(to[8:], binary.LittleEndian.Uint64(from[8:]))
+			if litLen <= 16 && len(src)-inPos >= 16 && len(dst)-outPos >= 16 {
+				copy16(dst[outPos:outPos+16], src[inPos:inPos+16])
 			} else {
-				copy(dst[d:d+n], src[s:s+n])
+				copy(dst[outPos:outPos+litLen], src[inPos:inPos+litLen])
 			}
-			s += n
-			d += n
-			state = 4
+			inPos += litLen
+			outPos += litLen
+			state = stateManyLiterals
 			continue
 
 		default:
@@ -223,79 +247,100 @@ func Decompress(srcBytes, dstBytes []byte) (outSize int, err error) {
 			 *  Always followed by exactly one byte : H H H H H H H H
 			 *    distance = (H << 2) + D + 2049
 			 */
-			if s >= len(src) {
-				return d, ErrInputOverrun
+			if inPos >= len(src) {
+				return outPos, ErrInputOverrun
 			}
-			dist = int(src[s])<<2 + inst>>2 + 1
-			s++
-			length = 2
-			if state == 4 {
-				dist += 2048
-				length = 3
+			matchDist = int(src[inPos])<<2 + opcode>>2 + 1
+			inPos++
+			matchLen = 2
+			if state == stateManyLiterals {
+				matchDist += m1FarDistance
+				matchLen = 3
 			}
-			next = inst & 3
+			litLen = opcode & 3
 		}
 
-		if dist > d {
-			return d, ErrLookbehindOverrun
+		// The match must start within the output written so far, and the literals must be present in src. Both
+		// must fit into dst.
+		if matchDist > outPos {
+			return outPos, ErrLookbehindOverrun
 		}
-		if next > len(src)-s {
-			return d, ErrInputOverrun
+		if litLen > len(src)-inPos {
+			return outPos, ErrInputOverrun
 		}
-		if length+next > len(dst)-d {
-			return d, ErrOutputOverrun
+		if matchLen+litLen > len(dst)-outPos {
+			return outPos, ErrOutputOverrun
 		}
 
-		m := d - dist
+		// If the match is longer than its distance, it overlaps the bytes it is writing: it repeats the last
+		// matchDist bytes, as a front to back byte by byte copy would. The built-in copy() does not do that.
+		matchPos := outPos - matchDist
 		switch {
-		case dist >= 8 && length <= 16 && len(dst)-d >= 16:
-			// short matches are copied as 8 byte words. The source of every word lies completely before its
-			// destination, so this works even if the match overlaps itself. Bytes written past the match are
-			// overwritten later.
-			to, from := dst[d:d+16], dst[m:m+16]
-			binary.LittleEndian.PutUint64(to, binary.LittleEndian.Uint64(from))
-			if length > 8 {
-				binary.LittleEndian.PutUint64(to[8:], binary.LittleEndian.Uint64(from[8:]))
+		case matchDist >= 8 && matchLen <= 16 && len(dst)-outPos >= 16:
+			// short match, copied as 8 byte words. Reading each word only after the previous one was written is
+			// enough to repeat bytes correctly if they are at least 8 bytes back.
+			to, from := dst[outPos:outPos+16], dst[matchPos:matchPos+16]
+			copy8(to, from)
+			if matchLen > 8 {
+				copy8(to[8:], from[8:])
 			}
-			d += length
-		case dist >= length:
-			copy(dst[d:d+length], dst[m:m+length])
-			d += length
+			outPos += matchLen
+		case matchDist >= matchLen:
+			copy(dst[outPos:outPos+matchLen], dst[matchPos:matchPos+matchLen])
+			outPos += matchLen
 		default:
-			// the match overlaps itself and repeats the last dist bytes: copy everything available so far,
-			// doubling the copied amount every round
-			for end := d + length; d < end; {
-				d += copy(dst[d:end], dst[m:d])
+			// overlapping match: copy everything available so far, doubling the copied amount every round
+			for end := outPos + matchLen; outPos < end; {
+				outPos += copy(dst[outPos:end], dst[matchPos:outPos])
 			}
 		}
 
-		if next > 0 {
-			if len(src)-s >= 4 && len(dst)-d >= 4 {
-				// copy a whole word, the bytes past the literals are overwritten later
-				binary.LittleEndian.PutUint32(dst[d:d+4], binary.LittleEndian.Uint32(src[s:s+4]))
+		if litLen > 0 {
+			if len(src)-inPos >= 4 && len(dst)-outPos >= 4 {
+				copy4(dst[outPos:outPos+4], src[inPos:inPos+4])
 			} else {
-				copy(dst[d:d+next], src[s:s+next])
+				copy(dst[outPos:outPos+litLen], src[inPos:inPos+litLen])
 			}
-			d += next
-			s += next
+			inPos += litLen
+			outPos += litLen
 		}
-		state = next
+		state = litLen
 	}
 }
 
+// The following helpers copy short runs as whole words. Callers use them for runs shorter than a helper's size
+// when both slices have room for the whole size: the bytes written past the end of the run are overwritten by
+// what is decompressed next, or lie past the end of the decompressed data.
+
+// copy16 copies 16 bytes as two 8 byte words.
+func copy16(to, from []byte) {
+	copy8(to, from)
+	copy8(to[8:], from[8:])
+}
+
+// copy8 copies 8 bytes as one word.
+func copy8(to, from []byte) {
+	binary.LittleEndian.PutUint64(to, binary.LittleEndian.Uint64(from))
+}
+
+// copy4 copies 4 bytes as one word.
+func copy4(to, from []byte) {
+	binary.LittleEndian.PutUint32(to, binary.LittleEndian.Uint32(from))
+}
+
 // extendedLength decodes a length that did not fit into its instruction: base plus 255 for every zero byte,
-// plus the first non-zero byte. It returns the length and the new position in src.
-func extendedLength(src []byte, s, base int) (length, pos int, err error) {
-	start := s
-	for s < len(src) && src[s] == 0 {
-		s++
+// plus the first non-zero byte. It returns the length and the new read position in src.
+func extendedLength(src []byte, inPos, base int) (length, newPos int, err error) {
+	start := inPos
+	for inPos < len(src) && src[inPos] == 0 {
+		inPos++
 	}
-	count := s - start
-	if uint(count) > max255Count {
-		return 0, s, ErrDecompressionFailed
+	zeroBytes := inPos - start
+	if uint(zeroBytes) > maxZeroBytes {
+		return 0, inPos, ErrDecompressionFailed
 	}
-	if s >= len(src) {
-		return 0, s, ErrInputOverrun
+	if inPos >= len(src) {
+		return 0, inPos, ErrInputOverrun
 	}
-	return base + count*255 + int(src[s]), s + 1, nil
+	return base + zeroBytes*255 + int(src[inPos]), inPos + 1, nil
 }
