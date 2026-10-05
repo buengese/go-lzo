@@ -3,7 +3,7 @@
 This library is a hard fork of [anchore/go-lzo](https://github.com/anchore/go-lzo). Releases up to v0.1.1 are
 upstream releases.
 
-## Unreleased
+## v0.2.0 (2026-10-05)
 
 ### Added
 
